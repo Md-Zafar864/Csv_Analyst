@@ -1,0 +1,1 @@
+uvicorn folder_name.file_name:fastapi_variable --reload

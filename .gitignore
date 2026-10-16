@@ -1,1 +1,19 @@
+# Virtual environments
+.venv/
+venv/
+
+# Windows system files
 desktop.ini
+Thumbs.db
+
+# Environment variables and API keys
+.env
+.env.*
+!.env.example
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Local database
+app.db
