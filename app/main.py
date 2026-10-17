@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.csv_service import inspect_csv
 from app.database import Dataset, SessionLocal
+from app.csv_service import load_saved_dataset
 
 app = FastAPI(
     title="AI CSV Analyst",
@@ -155,5 +156,55 @@ def get_dataset(dataset_id: str):
             "created_at": dataset.created_at,
         }
 
+    finally:
+        db.close()
+
+@app.get("/datasets/{dataset_id}/inspect")
+def inspect_saved_dataset(dataset_id: str):
+    db=SessionLocal()
+
+    try:
+        dataset=db.get(Dataset,dataset_id)
+
+        if dataset is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset not found",
+            )
+        try:
+            df=load_saved_dataset(dataset.stored_path)
+
+        except FileNotFoundError as exc:
+             raise HTTPException(
+                status_code=404,
+                detail="Dataset file is missing from storage.",
+            ) from exc    
+        except (ValueError, pd.errors.ParserError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Stored dataset could not be read.",
+            ) from exc
+
+        return {
+            "dataset_id": dataset.id,
+            "filename": dataset.filename,
+            "row_count": len(df),
+            "column_count": len(df.columns),
+            "columns": [
+                {
+                    "name": str(column),
+                    "dtype": str(df[column].dtype),
+                    "null_count": int(df[column].isna().sum()),
+                    "unique_values": int(df[column].nunique()),
+                }
+                for column in df.columns
+            ],
+            "preview": df.head(5).fillna("").to_dict(
+                orient="records"
+            ),
+            "numeric_summary": df.describe(
+                include="number"
+            ).fillna(0).to_dict(),
+        }
     finally:
         db.close()

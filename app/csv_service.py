@@ -1,5 +1,7 @@
 import io
 import pandas as pd
+from pathlib import Path
+
 
 
 def inspect_csv(file_bytes:bytes):
@@ -28,3 +30,16 @@ def inspect_csv(file_bytes:bytes):
             include="number"
         ).fillna(0).to_dict(),
     }    
+
+def load_saved_dataset(stored_path: str):
+    path=Path(stored_path)
+
+    if not path.is_file():
+        raise FileNotFoundError("Stored dataset file not found.")
+
+    df=pd.read_csv(path)
+
+    if df.empty:
+        raise ValueError("Dataset contain no data rows")
+
+    return df
