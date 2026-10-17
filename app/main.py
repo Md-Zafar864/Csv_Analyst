@@ -12,6 +12,10 @@ from sqlalchemy.orm import Session
 from app.csv_service import inspect_csv
 from app.database import Dataset, SessionLocal
 from app.csv_service import load_saved_dataset
+from typing import Literal
+from pydantic import BaseModel,Field
+from app.analyse_engine import analyze_dataset
+from app.llm_service import create_analysis_plan
 
 app = FastAPI(
     title="AI CSV Analyst",
@@ -205,6 +209,133 @@ def inspect_saved_dataset(dataset_id: str):
             "numeric_summary": df.describe(
                 include="number"
             ).fillna(0).to_dict(),
+        }
+    finally:
+        db.close()
+
+class AnalyseRequest(BaseModel):
+    group_by:str
+    metric:str
+    aggregation: Literal["sum", "mean", "count", "min", "max"] = "sum"
+    descending: bool = True
+    limit: int = Field(default=10, ge=1, le=100) 
+
+@app.post("/datasets/{dataset_id}/analyze")
+def analyze_saved_dataset(
+    dataset_id:str,
+    request:AnalyseRequest,
+
+):
+    
+    db=SessionLocal()
+
+    try:
+        dataset=db.get(Dataset,dataset_id)
+
+        if dataset is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset not found."
+            )
+        try:
+            df=load_saved_dataset(dataset.stored_path)
+
+            result=analyze_dataset(
+                df=df,
+                group_by=request.group_by,
+                metric=request.metric,
+                aggregation=request.aggregation,
+                descending=request.descending,
+                limit=request.limit
+
+            )
+
+            return{
+                "dataset_id":dataset.id,
+                "filename":dataset.filename,
+                "analysis":result,
+            }
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset file is missing.",
+            ) from exc
+
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc),
+            ) from exc
+    finally:
+        db.close() 
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=1000)
+
+
+@app.post("/datasets/{dataset_id}/ask")
+
+async def ask_dataset(
+    dataset_id: str,
+    request: AskRequest,
+):
+    db=SessionLocal()
+
+    try:
+        dataset=db.get(Dataset,dataset_id)
+
+        if dataset is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset not found.",
+            )
+        try:
+            df = await run_in_threadpool(
+                load_saved_dataset,
+                dataset.stored_path,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset file is missing.",
+            ) from exc    
+        try:
+            plan = await run_in_threadpool(
+                create_analysis_plan,
+                request.question,
+                dataset.columns_info,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="AI service configuration is missing.",
+            ) from exc    
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Could not generate an analysis plan.",
+            ) from exc
+        try:
+            result= await run_in_threadpool(
+                analyze_dataset,
+                df=df,
+                group_by=plan.group_by,
+                metric=plan.metric,
+                aggregation=plan.aggregation,
+                descending=plan.descending,
+                limit=plan.limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="The requested analysis is invalid.",
+            ) from exc
+
+        return{
+            "dataset_id": dataset.id,
+            "question": request.question,
+            "analysis_plan": plan.model_dump(),
+            "analysis": result,
         }
     finally:
         db.close()
