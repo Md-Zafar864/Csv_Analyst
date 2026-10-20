@@ -1,11 +1,5 @@
-import os
-from dotenv import load_dotenv
+import pandas as pd
 
-load_dotenv()
-
-api_key = os.getenv("OPENAI_API_KEY")
-
-if api_key:
-    print("API key loaded successfully")
-else:
-    print("No API key found yet")
+t="7"
+target = pd.to_numeric(t, error="coerce")
+print(pd.isna(target))

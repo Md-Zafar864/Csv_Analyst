@@ -4,7 +4,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from typing import Literal
-
+from app.schemas import FilterCondition
 load_dotenv()
 
 
@@ -18,8 +18,10 @@ class AnalysisPlan(BaseModel):
     aggregation: Literal[
         "sum", "mean", "count", "min", "max"
     ]
+    
     descending: bool = True
     limit: int = Field(default=10, ge=1, le=100)
+    filters: list[FilterCondition] = Field(default_factory=list)
 
 
 def create_analysis_plan(question: str, columns_info: list):
@@ -54,6 +56,15 @@ Rules:
 8. Return only a plan matching the required output schema.
 9. If the question cannot be answered with this analysis
    plan, do not invent a plausible alternative.
+10. Use filters when the question specifies a condition,
+    such as a month, category, or numeric threshold.
+11. Each filter must use an existing column.
+12. Allowed filter operators are eq, ne, gt, gte, lt, lte, contains.
+13. Use eq for exact matches, such as month equals March.
+14. Use gt/gte/lt/lte for numeric comparisons.
+15. Use contains for text substring matching.
+16. Return an empty filters list when no filtering is needed.
+17. Never create a filter that the supported operators cannot express.   
 """
 
     response = client.models.generate_content(

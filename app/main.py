@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import BaseModel,Field
 from app.analyse_engine import analyze_dataset
 from app.llm_service import create_analysis_plan
-
+from app.schemas import FilterCondition
 app = FastAPI(
     title="AI CSV Analyst",
     description="Analyze CSV datasets using natural language.",
@@ -218,7 +218,8 @@ class AnalyseRequest(BaseModel):
     metric:str
     aggregation: Literal["sum", "mean", "count", "min", "max"] = "sum"
     descending: bool = True
-    limit: int = Field(default=10, ge=1, le=100) 
+    limit: int = Field(default=10, ge=1, le=100)
+    filters: list[FilterCondition] = Field(default_factory=list) 
 
 @app.post("/datasets/{dataset_id}/analyze")
 def analyze_saved_dataset(
@@ -246,7 +247,8 @@ def analyze_saved_dataset(
                 metric=request.metric,
                 aggregation=request.aggregation,
                 descending=request.descending,
-                limit=request.limit
+                limit=request.limit,
+                filters=request.filters
 
             )
 
@@ -324,6 +326,7 @@ async def ask_dataset(
                 aggregation=plan.aggregation,
                 descending=plan.descending,
                 limit=plan.limit,
+                filters=plan.filters,
             )
         except ValueError as exc:
             raise HTTPException(
