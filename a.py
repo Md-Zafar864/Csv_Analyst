@@ -1,5 +1,2 @@
-import pandas as pd
-
-t="7"
-target = pd.to_numeric(t, error="coerce")
-print(pd.isna(target))
+# http://127.0.0.1:8001
+# python -m uvicorn app.main:app --reload --port 8001

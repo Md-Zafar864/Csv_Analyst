@@ -5,18 +5,20 @@ import asyncio
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
-
+from fastapi.encoders import jsonable_encoder
 from app.csv_service import inspect_csv
 from app.database import Dataset, SessionLocal
+from app.database import get_db, AnalysisHistory,SavedQuery
 from app.csv_service import load_saved_dataset
 from typing import Literal
 from pydantic import BaseModel,Field
 from app.analyse_engine import analyze_dataset
 from app.llm_service import create_analysis_plan
-from app.schemas import FilterCondition
+from app.history_service import save_analysis_history
+from app.schemas import FilterCondition,SavedQueryCreate
 app = FastAPI(
     title="AI CSV Analyst",
     description="Analyze CSV datasets using natural language.",
@@ -214,7 +216,7 @@ def inspect_saved_dataset(dataset_id: str):
         db.close()
 
 class AnalyseRequest(BaseModel):
-    group_by:str
+    group_by:list[str] = Field(min_length=1)
     metric:str
     aggregation: Literal["sum", "mean", "count", "min", "max"] = "sum"
     descending: bool = True
@@ -251,7 +253,13 @@ def analyze_saved_dataset(
                 filters=request.filters
 
             )
-
+            save_analysis_history(
+                db=db,
+                dataset_id=dataset_id,
+                analysis_type="manual",
+                request_data=request.model_dump(),
+                result_data=result,
+            )
             return{
                 "dataset_id":dataset.id,
                 "filename":dataset.filename,
@@ -342,3 +350,191 @@ async def ask_dataset(
         }
     finally:
         db.close()
+
+@app.get("/datasets/{dataset_id}/history")
+def get_dataset_history(
+    dataset_id: str,
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    if skip < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="skip cannot be negative.",
+        )
+
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be between 1 and 100.",
+        )
+
+    dataset = (
+        db.query(Dataset)
+        .filter(Dataset.id == dataset_id)
+        .first()
+    )
+
+    if dataset is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found.",
+        )
+
+    query = db.query(AnalysisHistory).filter(
+        AnalysisHistory.dataset_id == dataset_id
+    )
+
+    total = query.count()
+
+    records = (
+        query
+        .order_by(AnalysisHistory.created_at.desc(),
+                  AnalysisHistory.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "dataset_id": dataset_id,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "count": len(records),
+        "history": [
+            {
+                "id": record.id,
+                "question": record.question,
+                "analysis_type": record.analysis_type,
+                "created_at": record.created_at,
+            }
+            for record in records
+        ],
+    }
+
+@app.post("/datasets/{dataset_id}/saved-query")
+def create_saved_query(
+    dataset_id: str,
+    request: SavedQueryCreate,
+    db: Session = Depends(get_db),
+):
+    print("STEP 1: Endpoint called", flush=True)
+
+    try:
+        dataset = db.query(Dataset).filter(
+            Dataset.id == dataset_id
+        ).first()
+
+        print("STEP 2: Dataset checked", flush=True)
+
+        if dataset is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset not found."
+            )
+
+        query_data = jsonable_encoder(request.query_data)
+
+        print("STEP 3: Query data prepared", flush=True)
+
+        saved_query = SavedQuery(
+            dataset_id=dataset_id,
+            name=request.name.strip(),
+            query_data=query_data,
+        )
+
+        print("STEP 4: SavedQuery object created", flush=True)
+
+        if not saved_query.name:
+            raise HTTPException(
+                status_code=422,
+                detail="Query name cannot be blank."
+            )
+
+        db.add(saved_query)
+        print("STEP 5: Added to session", flush=True)
+
+        db.commit()
+        print("STEP 6: Committed", flush=True)
+
+        db.refresh(saved_query)
+        print("STEP 7: Refreshed", flush=True)
+
+        return {
+            "message": "Query saved successfully.",
+            "saved_query": {
+                "id": saved_query.id,
+                "dataset_id": saved_query.dataset_id,
+                "name": saved_query.name,
+                "query_data": saved_query.query_data,
+                "created_at": saved_query.created_at,
+            },
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        db.rollback()
+        print("ACTUAL ERROR:", repr(exc), flush=True)
+        raise
+
+@app.get("/datasets/{dataset_id}/saved-queries")
+def list_saved_queries(
+        dataset_id:str,
+        db:Session=Depends(get_db)
+    ):
+        dataset=(
+            db.query(Dataset)
+            .filter(dataset_id==dataset_id)
+            .first()
+        )
+        if dataset is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Dataset not found"
+            )
+
+        queries = (
+        db.query(SavedQuery)
+        .filter(SavedQuery.dataset_id == dataset_id)
+        .order_by(SavedQuery.created_at.desc(), SavedQuery.id.desc())
+        .all()
+    )
+
+        return {
+            "dataset_id": dataset_id,
+            "count": len(queries),
+            "saved_queries": [
+                {
+                    "id": query.id,
+                    "name": query.name,
+                    "created_at": query.created_at,
+                }
+                for query in queries
+            ],
+        }
+
+@app.get("/saved-queries/{query_id}")
+def get_saved_query(
+    query_id:int,
+    db: Session=Depends(get_db)
+):
+    query=(db.query(SavedQuery).filter(SavedQuery.id==query_id).first())
+
+    if query is None:
+        raise HTTPException(
+            status_code=404,
+            detail= "Saved query not found"
+        )
+    return{
+        "id": query.id,
+        "dataset_id": query.dataset_id,
+        "name": query.name,
+        "query_data": query.query_data,
+        "created_at": query.created_at,
+    }
+
+

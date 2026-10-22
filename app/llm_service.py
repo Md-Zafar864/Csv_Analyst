@@ -9,19 +9,27 @@ load_dotenv()
 
 
 class AnalysisPlan(BaseModel):
-    group_by: str = Field(
-        description="Existing colum used to group rows"
+    group_by: list[str] = Field(
+        min_length=1,
+        max_length=3,
+        description="List of 1 to 3 existing columns used to group rows."
     )
+
     metric: str = Field(
         description="Existing column to aggregate."
     )
+
     aggregation: Literal[
         "sum", "mean", "count", "min", "max"
     ]
-    
+
     descending: bool = True
+
     limit: int = Field(default=10, ge=1, le=100)
-    filters: list[FilterCondition] = Field(default_factory=list)
+
+    filters: list[FilterCondition] = Field(
+        default_factory=list
+    )
 
 
 def create_analysis_plan(question: str, columns_info: list):
@@ -46,7 +54,7 @@ User question:
 
 Rules:
 1. Use only column names that exist in the provided schema.
-2. Choose one grouping column and one metric column.
+2. 2. Choose 1 to 3 grouping columns and one metric column.
 3. Choose only a supported aggregation.
 4. Use sum for total revenue or total returns.
 5. Use mean for average-value questions.
@@ -65,6 +73,12 @@ Rules:
 15. Use contains for text substring matching.
 16. Return an empty filters list when no filtering is needed.
 17. Never create a filter that the supported operators cannot express.   
+18. group_by must always be a list containing 1 to 3 column names.
+19. Use one grouping column for a simple breakdown.
+20. Use multiple grouping columns when the question asks for a
+    breakdown across multiple dimensions, such as category and month.
+21. Never repeat a grouping column.
+22. Never include the metric column in group_by.
 """
 
     response = client.models.generate_content(

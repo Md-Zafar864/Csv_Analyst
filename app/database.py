@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, JSON
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, JSON, ForeignKey, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, timezone
 
@@ -29,4 +29,58 @@ class Dataset(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class AnalysisHistory(Base):
+    __tablename__="analysis_history"
+
+    id=Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(
+        String,
+        ForeignKey("datasets.id"),
+        nullable=False,
+        index=True,
+    )
+    question = Column(Text, nullable=True)
+
+    analysis_type = Column(String, nullable=False)
+
+    request_data = Column(JSON, nullable=False)
+
+    result_data = Column(JSON, nullable=False)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+class SavedQuery(Base):
+    __tablename__="saved_queries"
+
+    id=Column(Integer,primary_key=True,index=True)
+    dataset_id = Column(
+        String,
+        ForeignKey("datasets.id"),
+        nullable=False,
+        index=True,
+    )
+
+    name = Column(String(100), nullable=False)
+
+    query_data = Column(JSON, nullable=False)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+
 Base.metadata.create_all(bind=engine)
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()
