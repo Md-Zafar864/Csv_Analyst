@@ -14,7 +14,7 @@ from app.database import Dataset, SessionLocal
 from app.database import get_db, AnalysisHistory,SavedQuery
 from app.csv_service import load_saved_dataset
 from typing import Literal
-from pydantic import BaseModel,Field
+from pydantic import BaseModel,Field,ValidationError
 from app.analyse_engine import analyze_dataset
 from app.llm_service import create_analysis_plan
 from app.history_service import save_analysis_history
@@ -488,7 +488,7 @@ def list_saved_queries(
     ):
         dataset=(
             db.query(Dataset)
-            .filter(dataset_id==dataset_id)
+            .filter(Dataset.id==dataset_id)
             .first()
         )
         if dataset is None:
@@ -537,4 +537,152 @@ def get_saved_query(
         "created_at": query.created_at,
     }
 
+@app.post("/saved-query/{query_id}/run")
+def run_saved_query(
+    query_id:int,
+    db:Session=Depends(get_db)
+):
+    saved_query = (
+        db.query(SavedQuery)
+        .filter(SavedQuery.id == query_id)
+        .first()
+    )
 
+    if saved_query is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Saved query not found.",
+        )
+    try:
+        analysis_request= AnalyseRequest.model_validate(
+            saved_query.query_data
+        )
+
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Saved query contains invalid analysis parameter"
+        ) from exc
+    dataset =db.get(Dataset,saved_query.dataset_id)
+
+    if dataset is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found"
+        )
+    try:
+        df=load_saved_dataset(dataset.stored_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset file is missing."
+        ) from exc
+    except (ValueError, pd.errors.ParserError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Stored dataset could not be read."
+        ) from exc
+    try:
+        result=analyze_dataset(
+            df=df,
+            group_by=analysis_request.group_by,
+            metric=analysis_request.metric,
+            aggregation=analysis_request.aggregation,
+            descending=analysis_request.descending,
+            limit=analysis_request.limit,
+            filters=analysis_request.filters
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc)
+        ) from exc
+
+    result_data=jsonable_encoder(result)
+
+    save_analysis_history(
+        db=db,
+        dataset_id=dataset.id,
+        question=None,
+        analysis_type="saved",
+        request_data=jsonable_encoder(analysis_request.model_dump()),
+        result_data=result_data
+    )    
+    return {
+        "message": "Saved query executed successfully.",
+        "saved_query_id": saved_query.id,
+        "saved_query_name": saved_query.name,
+        "dataset_id": dataset.id,
+        "filename": dataset.filename,
+        "analysis": result_data
+    }
+
+class ChartRequest(AnalyseRequest):
+    chart_type: Literal["bar", "line", "pie"] = "bar"
+    title: str | None = None
+from app.chart_service import prepare_chart_data
+
+@app.post("/datasets/{dataset_id}/chart")
+def create_chart(
+    dataset_id: str,
+    request: ChartRequest,
+    db: Session = Depends(get_db)
+):
+
+    # Step 1: Find dataset in database
+    dataset = db.get(Dataset, dataset_id)
+
+    # Step 2: Check if dataset exists
+    if dataset is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset not found."
+        )
+
+    # Step 3: Load CSV
+    try:
+        df = load_saved_dataset(dataset.stored_path)
+
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Dataset file is missing from storage."
+        ) from exc
+
+    except (ValueError, pd.errors.ParserError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Stored dataset could not be read."
+        ) from exc
+
+    # Step 4: Analyze dataset and prepare chart
+    try:
+        analysis = analyze_dataset(
+            df=df,
+            group_by=request.group_by,
+            metric=request.metric,
+            aggregation=request.aggregation,
+            descending=request.descending,
+            limit=request.limit,
+            filters=request.filters
+        )
+
+        chart = prepare_chart_data(
+            analysis=analysis,
+            chart_type=request.chart_type,
+            title=request.title
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc)
+        ) from exc
+
+    # Step 5: Return response
+    return {
+        "dataset_id": dataset.id,
+        "filename": dataset.filename,
+        "chart": chart,
+        "analysis": analysis
+    }
